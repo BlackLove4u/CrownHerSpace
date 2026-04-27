@@ -1,0 +1,794 @@
+import { useState, useRef, useEffect } from “react”;
+
+// ─── DESIGN TOKENS ───────────────────────────────────────────────────────────
+const C = {
+bg:        “#08080A”,
+surface:   “#0F0F12”,
+card:      “#141418”,
+border:    “#1E1E24”,
+borderGold:”#C9A84C30”,
+gold:      “#C9A84C”,
+goldLight: “#E8C96A”,
+goldDim:   “#8B6B2A”,
+goldFaint: “#C9A84C12”,
+cream:     “#F0E8D0”,
+muted:     “#5A5660”,
+mutedMid:  “#7A7280”,
+red:       “#C94C4C”,
+green:     “#4C8C6A”,
+teal:      “#4C8C8C”,
+purple:    “#7C5EA0”,
+};
+
+const FONT_DISPLAY = “‘Cinzel’, serif”;
+const FONT_BODY    = “‘Cormorant Garamond’, serif”;
+
+// ─── AI TWIN PERSONA (baked into every generation) ───────────────────────────
+const TWIN_SYSTEM = `You are the AI content creation engine for Mae (also known as Zayiah) — founder of Phoenix Rise and CrownHer. You generate content in her authentic voice.
+
+HER VOICE: Raw, wise, direct, empowering. She speaks from lived experience, not theory. No toxic positivity. No fluff. Truth first, always. She uses accessible language — her audience is everyday women (and some men) who are healing, rebuilding, and reclaiming themselves. She breaks down psychology, patterns, and cycles in plain language. She never talks down to her audience.
+
+HER MISSION: Radical healing, survivor support, somatic healing through movement, breaking generational cycles, building community for people who have been through narcissistic abuse, trauma, and systemic barriers.
+
+HER NON-NEGOTIABLES: Truth over comfort. People are not transactions. Resources stay accessible. No gatekeeping wisdom. Real-time healing (she’s in it, not speaking from 20 years away).
+
+CONTENT FRAMEWORK — always follow this 3-part arc:
+
+1. AWARENESS: Name the problem / pattern / truth. Make the audience feel SEEN immediately.
+1. RECOGNITION: Here’s WHY this happens. The science, the psychology, the cycle — broken down simply. This is the “ohhhh” moment.
+1. SOLUTION / SHIFT: Here’s what you can actually do. Practical, accessible, empowering. Not a 10-step program — one real move they can make today.
+
+TONE CALIBRATION by format:
+
+- TikTok/Reels: Punchy, provocative hook first. Under 60 seconds spoken. Conversational. Feels like she’s talking directly to you.
+- YouTube Long-form: Warm, educational, storytelling. Like a wise older sister breaking it all the way down.
+- YouTube Shorts: One truth, one insight, one punchline. 30–45 seconds max.
+- Instagram Caption: 2–3 punchy lines + depth paragraph + 3–5 hashtags. Save-worthy.
+- Blog/Article: Journalistic but personal. SEO-aware but soul-forward.
+
+Always output clean, formatted content ready to copy and post. No meta-commentary, no “here is your script.” Just the content itself.`;
+
+// ─── FORMATS ─────────────────────────────────────────────────────────────────
+const FORMATS = [
+{ id:“tiktok”,   label:“TikTok / Reel”,      icon:“📱”, color: C.gold,   prompt: “Write a TikTok/Instagram Reels script. Include [HOOK], [BODY], [CTA] labels. Under 60 seconds spoken. High energy.” },
+{ id:“ytlong”,   label:“YouTube Video”,       icon:“🎬”, color: C.teal,   prompt: “Write a full YouTube video script with intro hook, main sections, and outro CTA. 8–12 minutes spoken length. Include timestamps.” },
+{ id:“ytshort”,  label:“YouTube Short”,       icon:“⚡”, color: C.purple, prompt: “Write a YouTube Short script. 30–45 seconds. One core truth. End on a strong punchline or question.” },
+{ id:“ig”,       label:“Instagram Caption”,   icon:“✨”, color: C.goldLight, prompt: “Write an Instagram caption. 2–3 hook lines, then depth paragraph, then 8–12 hashtags separated. Make it save-worthy.” },
+{ id:“blog”,     label:“Blog / Article”,      icon:“📝”, color: C.green,  prompt: “Write a full blog article with H1, intro, 3–4 sections with H2s, and conclusion. SEO-aware, 700–1000 words.” },
+];
+
+const MODES = [
+{ id:“topic”,    label:“Topic / Idea”,    icon:“💡”, placeholder:“e.g. Why Virgos lose themselves in toxic relationships” },
+{ id:“url”,      label:“URL / Article”,   icon:“🔗”, placeholder:“Paste a URL or article text to repurpose into content” },
+{ id:“comment”,  label:“Comment / DM”,    icon:“💬”, placeholder:“Paste a comment or DM you want to turn into content” },
+{ id:“brainstorm”,label:“Brainstorm”,     icon:“🧠”, placeholder:“Describe what’s on your mind — I’ll turn it into content ideas” },
+{ id:“feedback”, label:“Feedback Loop”,   icon:“📊”, placeholder:“Paste your top comments, saves count, or engagement notes from this week” },
+];
+
+// ─── TRENDING TOPICS (would be live API in Phase 2) ───────────────────────────
+const TRENDING = [
+“Why you keep attracting the same type of person”,
+“The freeze response — when you can’t speak up for yourself”,
+“Healing vs performing healing”,
+“Why strong women struggle to receive”,
+“The nervous system doesn’t lie”,
+“Setting boundaries without guilt”,
+“When family is the trauma source”,
+“Somatic healing: what it actually means”,
+“The fawn response in survivors”,
+“Why Virgos become caretakers”,
+];
+
+// ─── SAVED CONTENT STORE ─────────────────────────────────────────────────────
+const STORAGE_KEY = “mae_workstation_v1”;
+function loadSaved() {
+try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; }
+}
+function saveDraft(draft) {
+try {
+const existing = loadSaved();
+const updated = [draft, …existing].slice(0, 50);
+localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+} catch {}
+}
+
+// ─── CALL CLAUDE API ─────────────────────────────────────────────────────────
+async function callClaude(userPrompt) {
+const res = await fetch(“https://api.anthropic.com/v1/messages”, {
+method: “POST”,
+headers: { “Content-Type”: “application/json” },
+body: JSON.stringify({
+model: “claude-sonnet-4-20250514”,
+max_tokens: 1000,
+system: TWIN_SYSTEM,
+messages: [{ role: “user”, content: userPrompt }],
+}),
+});
+const data = await res.json();
+if (data.error) throw new Error(data.error.message);
+return data.content?.map(b => b.text || “”).join(””) || “”;
+}
+
+// ─── SUB-COMPONENTS ───────────────────────────────────────────────────────────
+
+function Orbs() {
+return (
+<div style={{ position:“fixed”, inset:0, pointerEvents:“none”, overflow:“hidden”, zIndex:0 }}>
+{[
+{ x:“10%”,  y:“20%”, size:400, color:C.goldDim,  blur:180, op:0.07 },
+{ x:“80%”,  y:“60%”, size:350, color:C.purple,   blur:160, op:0.05 },
+{ x:“50%”,  y:“90%”, size:300, color:C.teal,     blur:140, op:0.04 },
+].map((o,i) => (
+<div key={i} style={{
+position:“absolute”, left:o.x, top:o.y,
+width:o.size, height:o.size, borderRadius:“50%”,
+background:o.color, filter:`blur(${o.blur}px)`,
+opacity:o.op, transform:“translate(-50%,-50%)”,
+animation:`float${i} ${8+i*3}s ease-in-out infinite alternate`,
+}}/>
+))}
+<style>{`@keyframes float0 { from{transform:translate(-50%,-50%) scale(1)} to{transform:translate(-45%,-55%) scale(1.1)} } @keyframes float1 { from{transform:translate(-50%,-50%) scale(1)} to{transform:translate(-55%,-45%) scale(0.9)} } @keyframes float2 { from{transform:translate(-50%,-50%) scale(1)} to{transform:translate(-45%,-50%) scale(1.05)} }`}</style>
+</div>
+);
+}
+
+function Sidebar({ activeTab, setActiveTab, savedCount }) {
+const tabs = [
+{ id:“create”,   icon:“✦”,  label:“Create”    },
+{ id:“calendar”, icon:“◈”,  label:“Calendar”  },
+{ id:“saved”,    icon:“◉”,  label:“Saved”, badge: savedCount },
+{ id:“trending”, icon:“⟁”,  label:“Trending”  },
+{ id:“twin”,     icon:“◎”,  label:“AI Twin”   },
+];
+return (
+<div style={{
+width:72, flexShrink:0,
+background:C.surface,
+borderRight:`1px solid ${C.border}`,
+display:“flex”, flexDirection:“column”,
+alignItems:“center”, paddingTop:24, paddingBottom:24,
+gap:4, position:“relative”, zIndex:10,
+}}>
+{/* Logo */}
+<div style={{
+width:40, height:40, borderRadius:10,
+background:`linear-gradient(135deg, ${C.goldDim}, ${C.gold})`,
+display:“flex”, alignItems:“center”, justifyContent:“center”,
+fontSize:18, fontFamily:FONT_DISPLAY, color:C.bg, fontWeight:700,
+marginBottom:24, flexShrink:0,
+}}>♅</div>
+
+```
+  {tabs.map(t => (
+    <button key={t.id} onClick={() => setActiveTab(t.id)}
+      title={t.label}
+      style={{
+        width:48, height:48, borderRadius:12, border:"none", cursor:"pointer",
+        background: activeTab===t.id ? C.goldFaint : "transparent",
+        color: activeTab===t.id ? C.gold : C.muted,
+        fontSize:18, display:"flex", alignItems:"center", justifyContent:"center",
+        transition:"all 0.2s", position:"relative",
+      }}>
+      {t.icon}
+      {t.badge > 0 && (
+        <span style={{
+          position:"absolute", top:6, right:6, width:16, height:16,
+          borderRadius:"50%", background:C.gold, color:C.bg,
+          fontSize:9, fontFamily:FONT_DISPLAY, fontWeight:700,
+          display:"flex", alignItems:"center", justifyContent:"center",
+        }}>{t.badge > 9 ? "9+" : t.badge}</span>
+      )}
+    </button>
+  ))}
+</div>
+```
+
+);
+}
+
+function FormatPill({ fmt, selected, onClick }) {
+return (
+<button onClick={() => onClick(fmt.id)}
+style={{
+display:“flex”, alignItems:“center”, gap:8,
+padding:“10px 16px”, borderRadius:20,
+background: selected ? `${fmt.color}20` : C.card,
+border:`1px solid ${selected ? fmt.color+"60" : C.border}`,
+color: selected ? fmt.color : C.muted,
+fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:1.5,
+cursor:“pointer”, transition:“all 0.2s”, whiteSpace:“nowrap”,
+}}>
+<span style={{fontSize:14}}>{fmt.icon}</span>
+{fmt.label}
+</button>
+);
+}
+
+function CreateTab({ savedDrafts, setSavedDrafts }) {
+const [mode, setMode]         = useState(“topic”);
+const [format, setFormat]     = useState(“tiktok”);
+const [input, setInput]       = useState(””);
+const [output, setOutput]     = useState(””);
+const [loading, setLoading]   = useState(false);
+const [error, setError]       = useState(””);
+const [copied, setCopied]     = useState(false);
+const outputRef               = useRef(null);
+
+const modeObj   = MODES.find(m => m.id === mode);
+const formatObj = FORMATS.find(f => f.id === format);
+
+const generate = async () => {
+if (!input.trim()) { setError(“Add a topic, URL, comment, or idea first.”); return; }
+setError(””); setLoading(true); setOutput(””);
+try {
+const prompt = `MODE: ${modeObj.label}
+FORMAT REQUESTED: ${formatObj.label}
+FORMAT INSTRUCTIONS: ${formatObj.prompt}
+
+INPUT FROM MAE:
+${input.trim()}
+
+Generate the complete ${formatObj.label} content now. Follow her voice and the 3-part framework (Awareness → Recognition → Solution) where applicable.`;
+const result = await callClaude(prompt);
+setOutput(result);
+const draft = { id: Date.now(), format, mode, input: input.trim(), output: result, date: new Date().toLocaleDateString() };
+saveDraft(draft);
+setSavedDrafts(loadSaved());
+setTimeout(() => outputRef.current?.scrollIntoView({ behavior:“smooth”, block:“start” }), 100);
+} catch(e) {
+setError(e.message || “Generation failed. Check your connection.”);
+}
+setLoading(false);
+};
+
+const copy = () => {
+navigator.clipboard.writeText(output);
+setCopied(true); setTimeout(() => setCopied(false), 2000);
+};
+
+return (
+<div style={{ padding:“32px 28px”, maxWidth:820, margin:“0 auto” }}>
+{/* Header */}
+<div style={{ marginBottom:32 }}>
+<div style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:4, marginBottom:8 }}>
+AI CONTENT WORKSTATION · PHASE 1
+</div>
+<h1 style={{ fontFamily:FONT_BODY, fontSize:36, color:C.cream, margin:0, fontWeight:600, lineHeight:1.1 }}>
+Create Content,<br/>
+<span style={{ color:C.gold, fontStyle:“italic” }}>in Your Voice.</span>
+</h1>
+</div>
+
+```
+  {/* Mode selector */}
+  <div style={{ marginBottom:24 }}>
+    <div style={{ color:C.muted, fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:3, marginBottom:12 }}>
+      WHAT ARE YOU WORKING WITH?
+    </div>
+    <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+      {MODES.map(m => (
+        <button key={m.id} onClick={() => setMode(m.id)}
+          style={{
+            padding:"9px 16px", borderRadius:20, cursor:"pointer",
+            background: mode===m.id ? C.goldFaint : C.card,
+            border:`1px solid ${mode===m.id ? C.gold+"50" : C.border}`,
+            color: mode===m.id ? C.gold : C.muted,
+            fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:1.5,
+            transition:"all 0.2s", display:"flex", alignItems:"center", gap:6,
+          }}>
+          <span>{m.icon}</span>{m.label}
+        </button>
+      ))}
+    </div>
+  </div>
+
+  {/* Input */}
+  <div style={{ marginBottom:24 }}>
+    <textarea
+      value={input}
+      onChange={e => { setInput(e.target.value); setError(""); }}
+      placeholder={modeObj.placeholder}
+      rows={5}
+      style={{
+        width:"100%", padding:"18px 20px",
+        background:C.card, border:`1px solid ${C.border}`,
+        borderRadius:16, color:C.cream,
+        fontFamily:FONT_BODY, fontSize:17, lineHeight:1.7,
+        resize:"vertical", outline:"none",
+        transition:"border 0.2s",
+      }}
+      onFocus={e => e.target.style.borderColor = C.goldDim}
+      onBlur={e => e.target.style.borderColor = C.border}
+    />
+    {error && <p style={{ color:C.red, fontFamily:FONT_DISPLAY, fontSize:11, letterSpacing:1, marginTop:8 }}>{error}</p>}
+  </div>
+
+  {/* Format selector */}
+  <div style={{ marginBottom:28 }}>
+    <div style={{ color:C.muted, fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:3, marginBottom:12 }}>
+      OUTPUT FORMAT
+    </div>
+    <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+      {FORMATS.map(f => <FormatPill key={f.id} fmt={f} selected={format===f.id} onClick={setFormat}/>)}
+    </div>
+  </div>
+
+  {/* Generate button */}
+  <button onClick={generate} disabled={loading}
+    style={{
+      width:"100%", padding:"18px",
+      background: loading ? C.card : `linear-gradient(135deg, ${C.goldDim}, ${C.gold})`,
+      border:`1px solid ${loading ? C.border : "transparent"}`,
+      borderRadius:14, color: loading ? C.muted : C.bg,
+      fontFamily:FONT_DISPLAY, fontSize:13, letterSpacing:3, fontWeight:700,
+      cursor: loading ? "wait" : "pointer", transition:"all 0.3s",
+      display:"flex", alignItems:"center", justifyContent:"center", gap:10,
+    }}>
+    {loading ? (
+      <>
+        <span style={{ animation:"spin 1s linear infinite", display:"inline-block" }}>◌</span>
+        GENERATING IN YOUR VOICE…
+      </>
+    ) : `✦ GENERATE ${formatObj.label.toUpperCase()}`}
+  </button>
+
+  {/* Output */}
+  {output && (
+    <div ref={outputRef} style={{ marginTop:32, animation:"fadeUp 0.5s ease forwards" }}>
+      <div style={{
+        background:C.card, border:`1px solid ${C.borderGold}`,
+        borderRadius:20, overflow:"hidden",
+      }}>
+        {/* Output header */}
+        <div style={{
+          display:"flex", alignItems:"center", justifyContent:"space-between",
+          padding:"16px 24px", borderBottom:`1px solid ${C.border}`,
+        }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:18 }}>{formatObj.icon}</span>
+            <span style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:2 }}>
+              {formatObj.label.toUpperCase()} · READY TO POST
+            </span>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={copy}
+              style={{
+                padding:"8px 16px", borderRadius:8,
+                background: copied ? C.green+"30" : C.goldFaint,
+                border:`1px solid ${copied ? C.green+"50" : C.borderGold}`,
+                color: copied ? C.green : C.gold,
+                fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:2, cursor:"pointer",
+              }}>
+              {copied ? "✓ COPIED" : "COPY"}
+            </button>
+          </div>
+        </div>
+        {/* Output content */}
+        <div style={{ padding:"24px", maxHeight:600, overflowY:"auto" }}>
+          <pre style={{
+            fontFamily:FONT_BODY, fontSize:17, color:C.cream,
+            lineHeight:1.8, margin:0, whiteSpace:"pre-wrap", wordBreak:"break-word",
+          }}>{output}</pre>
+        </div>
+      </div>
+
+      {/* Quick actions */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginTop:12 }}>
+        {[
+          { label:"Make it shorter",   prompt:`Take this content and cut it by 40%. Keep the core truth and hook:\n\n${output}` },
+          { label:"More raw / real",   prompt:`Rewrite this in a more vulnerable, raw voice — like she's speaking from the heart not a script:\n\n${output}` },
+          { label:"Add science",       prompt:`Add a brief psychology/neuroscience insight to support the main point in this content:\n\n${output}` },
+        ].map((a,i) => (
+          <button key={i}
+            onClick={async () => {
+              setLoading(true);
+              try { const r = await callClaude(a.prompt); setOutput(r); } catch{}
+              setLoading(false);
+            }}
+            style={{
+              padding:"12px 10px", borderRadius:10,
+              background:C.card, border:`1px solid ${C.border}`,
+              color:C.mutedMid, fontFamily:FONT_DISPLAY, fontSize:9,
+              letterSpacing:1.5, cursor:"pointer", transition:"all 0.2s",
+            }}>
+            {a.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )}
+
+  <style>{`
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+  `}</style>
+</div>
+```
+
+);
+}
+
+function TrendingTab() {
+const [expanded, setExpanded] = useState(null);
+const [ideas, setIdeas]       = useState({});
+const [loading, setLoading]   = useState(null);
+
+const generate = async (topic, idx) => {
+setLoading(idx);
+try {
+const prompt = `Generate 3 content angle ideas for this trending topic in trauma healing / survivor recovery niche: "${topic}" Format as 3 numbered content ideas, each with: platform, hook line, and content arc. Be specific and punchy.`;
+const result = await callClaude(prompt);
+setIdeas(prev => ({ …prev, [idx]: result }));
+setExpanded(idx);
+} catch {}
+setLoading(null);
+};
+
+return (
+<div style={{ padding:“32px 28px”, maxWidth:820, margin:“0 auto” }}>
+<div style={{ marginBottom:32 }}>
+<div style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:4, marginBottom:8 }}>NICHE INTELLIGENCE</div>
+<h2 style={{ fontFamily:FONT_BODY, fontSize:32, color:C.cream, margin:0 }}>Trending in Your Niche</h2>
+<p style={{ color:C.muted, fontFamily:FONT_BODY, fontSize:16, marginTop:8 }}>
+Top searched problems in trauma recovery, narcissistic abuse, and healing communities. Tap any topic to generate content angles.
+</p>
+</div>
+<div style={{ display:“flex”, flexDirection:“column”, gap:12 }}>
+{TRENDING.map((topic, i) => (
+<div key={i} style={{
+background:C.card, border:`1px solid ${expanded===i ? C.borderGold : C.border}`,
+borderRadius:16, overflow:“hidden”, transition:“border 0.2s”,
+}}>
+<div style={{
+display:“flex”, alignItems:“center”, justifyContent:“space-between”,
+padding:“18px 20px”, cursor:“pointer”,
+}} onClick={() => setExpanded(expanded===i ? null : i)}>
+<div style={{ display:“flex”, alignItems:“center”, gap:12 }}>
+<span style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:11 }}>
+{String(i+1).padStart(2,“0”)}
+</span>
+<span style={{ color:C.cream, fontFamily:FONT_BODY, fontSize:18 }}>{topic}</span>
+</div>
+<button
+onClick={e => { e.stopPropagation(); generate(topic, i); }}
+disabled={loading===i}
+style={{
+padding:“8px 16px”, borderRadius:8, cursor:“pointer”,
+background:C.goldFaint, border:`1px solid ${C.borderGold}`,
+color:C.gold, fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:2,
+}}>
+{loading===i ? “…” : “CREATE →”}
+</button>
+</div>
+{expanded===i && ideas[i] && (
+<div style={{ padding:“0 20px 20px”, borderTop:`1px solid ${C.border}` }}>
+<pre style={{
+fontFamily:FONT_BODY, fontSize:16, color:C.cream,
+lineHeight:1.8, margin:“16px 0 0”, whiteSpace:“pre-wrap”,
+}}>{ideas[i]}</pre>
+</div>
+)}
+</div>
+))}
+</div>
+</div>
+);
+}
+
+function CalendarTab() {
+const days = [“MON”,“TUE”,“WED”,“THU”,“FRI”,“SAT”,“SUN”];
+const formats = {
+“MON”: { fmt:“tiktok”,  label:“TikTok”, color:C.gold },
+“WED”: { fmt:“ig”,      label:“Reel + Caption”, color:C.goldLight },
+“FRI”: { fmt:“ytshort”, label:“YouTube Short”, color:C.purple },
+“SAT”: { fmt:“ytlong”,  label:“YouTube Video”, color:C.teal },
+“SUN”: { fmt:“blog”,    label:“Blog Post”, color:C.green },
+};
+return (
+<div style={{ padding:“32px 28px”, maxWidth:820, margin:“0 auto” }}>
+<div style={{ marginBottom:32 }}>
+<div style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:4, marginBottom:8 }}>CONTENT CALENDAR</div>
+<h2 style={{ fontFamily:FONT_BODY, fontSize:32, color:C.cream, margin:0 }}>Your Weekly Rhythm</h2>
+<p style={{ color:C.muted, fontFamily:FONT_BODY, fontSize:16, marginTop:8 }}>
+5 pieces of content per week. Created in one session. Consistent, sustainable, strategic.
+</p>
+</div>
+<div style={{ display:“grid”, gridTemplateColumns:“repeat(7,1fr)”, gap:8, marginBottom:32 }}>
+{days.map(d => {
+const f = formats[d];
+return (
+<div key={d} style={{
+background: f ? C.card : C.surface,
+border:`1px solid ${f ? (f.color+"30") : C.border}`,
+borderRadius:14, padding:“16px 10px”, textAlign:“center”,
+minHeight:110,
+}}>
+<div style={{ color:C.muted, fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:2, marginBottom:8 }}>{d}</div>
+{f ? (
+<>
+<div style={{ fontSize:20, marginBottom:6 }}>
+{FORMATS.find(x=>x.id===f.fmt)?.icon}
+</div>
+<div style={{ color:f.color, fontFamily:FONT_DISPLAY, fontSize:8, letterSpacing:1, lineHeight:1.4 }}>{f.label}</div>
+</>
+) : (
+<div style={{ color:C.border, fontSize:20, marginTop:16 }}>—</div>
+)}
+</div>
+);
+})}
+</div>
+{/* weekly plan detail */}
+<div style={{ display:“flex”, flexDirection:“column”, gap:10 }}>
+{Object.entries(formats).map(([day,f]) => (
+<div key={day} style={{
+background:C.card, border:`1px solid ${f.color}25`,
+borderRadius:14, padding:“16px 20px”,
+display:“flex”, alignItems:“center”, gap:16,
+}}>
+<div style={{ width:48, textAlign:“center” }}>
+<div style={{ color:f.color, fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:2 }}>{day}</div>
+</div>
+<div style={{ fontSize:20 }}>{FORMATS.find(x=>x.id===f.fmt)?.icon}</div>
+<div>
+<div style={{ color:C.cream, fontFamily:FONT_BODY, fontSize:17 }}>{f.label}</div>
+<div style={{ color:C.muted, fontFamily:FONT_BODY, fontSize:14, marginTop:2 }}>
+{f.fmt===“tiktok” && “Hook → awareness → solution. 60 sec max.”}
+{f.fmt===“ig” && “Save-worthy caption + Reel in same theme.”}
+{f.fmt===“ytshort” && “One truth. One insight. 30–45 seconds.”}
+{f.fmt===“ytlong” && “Deep dive. 8–15 min. Community-building.”}
+{f.fmt===“blog” && “SEO + soul. Drives long-term traffic.”}
+</div>
+</div>
+</div>
+))}
+</div>
+<div style={{
+marginTop:24, padding:“20px 24px”,
+background:`linear-gradient(135deg, ${C.goldFaint}, ${C.card})`,
+border:`1px solid ${C.borderGold}`, borderRadius:16,
+}}>
+<p style={{ color:C.cream, fontFamily:FONT_BODY, fontSize:17, lineHeight:1.7, margin:0 }}>
+<strong style={{ color:C.gold }}>The system:</strong> Every Sunday, open the Create tab.
+Generate all 5 pieces from one core topic or 5 trending ones.
+Copy each into Buffer or Later. Schedule. Done for the week.
+That’s your consistency — not discipline, but a system.
+</p>
+</div>
+</div>
+);
+}
+
+function SavedTab({ savedDrafts, setSavedDrafts }) {
+const [selected, setSelected] = useState(null);
+const [copied, setCopied] = useState(false);
+
+const del = (id) => {
+const updated = savedDrafts.filter(d => d.id !== id);
+localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+setSavedDrafts(updated);
+if (selected?.id === id) setSelected(null);
+};
+
+return (
+<div style={{ padding:“32px 28px”, maxWidth:820, margin:“0 auto” }}>
+<div style={{ marginBottom:32 }}>
+<div style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:4, marginBottom:8 }}>CONTENT VAULT</div>
+<h2 style={{ fontFamily:FONT_BODY, fontSize:32, color:C.cream, margin:0 }}>Saved Drafts</h2>
+<p style={{ color:C.muted, fontFamily:FONT_BODY, fontSize:16, marginTop:8 }}>
+{savedDrafts.length} draft{savedDrafts.length!==1?“s”:””} saved locally on this device.
+</p>
+</div>
+{savedDrafts.length === 0 ? (
+<div style={{ textAlign:“center”, padding:“60px 0”, color:C.muted, fontFamily:FONT_BODY, fontSize:18 }}>
+No drafts yet. Generate your first piece of content to see it here.
+</div>
+) : (
+<div style={{ display:“grid”, gridTemplateColumns: selected ? “1fr 1fr” : “1fr”, gap:16 }}>
+<div style={{ display:“flex”, flexDirection:“column”, gap:10 }}>
+{savedDrafts.map(d => {
+const fmt = FORMATS.find(f=>f.id===d.format);
+return (
+<div key={d.id}
+onClick={() => setSelected(d)}
+style={{
+background:C.card,
+border:`1px solid ${selected?.id===d.id ? C.borderGold : C.border}`,
+borderRadius:14, padding:“16px 18px”, cursor:“pointer”, transition:“border 0.2s”,
+}}>
+<div style={{ display:“flex”, alignItems:“center”, justifyContent:“space-between”, marginBottom:8 }}>
+<div style={{ display:“flex”, alignItems:“center”, gap:8 }}>
+<span style={{ fontSize:16 }}>{fmt?.icon}</span>
+<span style={{ color:fmt?.color||C.gold, fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:2 }}>
+{fmt?.label.toUpperCase()}
+</span>
+</div>
+<span style={{ color:C.muted, fontFamily:FONT_DISPLAY, fontSize:9 }}>{d.date}</span>
+</div>
+<p style={{ color:C.cream, fontFamily:FONT_BODY, fontSize:16, margin:0, lineHeight:1.5,
+overflow:“hidden”, textOverflow:“ellipsis”, whiteSpace:“nowrap” }}>
+{d.input}
+</p>
+</div>
+);
+})}
+</div>
+{selected && (
+<div style={{
+background:C.card, border:`1px solid ${C.borderGold}`,
+borderRadius:16, overflow:“hidden”, position:“sticky”, top:0, maxHeight:“80vh”,
+display:“flex”, flexDirection:“column”,
+}}>
+<div style={{ padding:“16px 20px”, borderBottom:`1px solid ${C.border}`,
+display:“flex”, alignItems:“center”, justifyContent:“space-between” }}>
+<span style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:2 }}>DRAFT PREVIEW</span>
+<div style={{ display:“flex”, gap:8 }}>
+<button onClick={() => {
+navigator.clipboard.writeText(selected.output);
+setCopied(true); setTimeout(()=>setCopied(false),2000);
+}}
+style={{ padding:“6px 12px”, borderRadius:8, background:C.goldFaint,
+border:`1px solid ${C.borderGold}`, color:C.gold,
+fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:2, cursor:“pointer” }}>
+{copied?“✓”:“COPY”}
+</button>
+<button onClick={() => del(selected.id)}
+style={{ padding:“6px 12px”, borderRadius:8, background:“transparent”,
+border:`1px solid ${C.border}`, color:C.muted,
+fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:2, cursor:“pointer” }}>
+DELETE
+</button>
+</div>
+</div>
+<div style={{ padding:“20px”, overflowY:“auto”, flex:1 }}>
+<pre style={{ fontFamily:FONT_BODY, fontSize:16, color:C.cream,
+lineHeight:1.8, margin:0, whiteSpace:“pre-wrap” }}>{selected.output}</pre>
+</div>
+</div>
+)}
+</div>
+)}
+</div>
+);
+}
+
+function TwinTab() {
+const [prompt, setPrompt] = useState(””);
+const [output, setOutput] = useState(””);
+const [loading, setLoading] = useState(false);
+
+const generate = async () => {
+if (!prompt.trim()) return;
+setLoading(true); setOutput(””);
+try {
+const result = await callClaude(
+`You are Mae’s AI twin. Respond to the following as her digital voice — empowering, wise, healing-focused, real. This will be used as a comment response, DM reply, or community interaction.
+
+REQUEST: ${prompt}
+
+Write the response in first person as Mae/Zayiah. Keep it authentic, warm, boundaried, and purposeful.`
+);
+setOutput(result);
+} catch {}
+setLoading(false);
+};
+
+const scenarios = [
+“Someone DMs asking ‘how do I know if I’m healing or just coping?’”,
+“A comment says ‘you make this look easy, I’m so far from where you are’”,
+“Someone asks ‘what’s Phoenix Rise and how can it help me?’”,
+“A follower shares they just left a narcissistic relationship”,
+“Comment: ‘I tried everything and nothing works, I give up’”,
+];
+
+return (
+<div style={{ padding:“32px 28px”, maxWidth:820, margin:“0 auto” }}>
+<div style={{ marginBottom:32 }}>
+<div style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:4, marginBottom:8 }}>AI TWIN ENGINE</div>
+<h2 style={{ fontFamily:FONT_BODY, fontSize:32, color:C.cream, margin:0 }}>Your Digital Voice</h2>
+<p style={{ color:C.muted, fontFamily:FONT_BODY, fontSize:16, marginTop:8 }}>
+Generate responses as Mae/Zayiah — for comments, DMs, community posts, and brand interactions.
+Phase 2 will automate this directly on your social platforms.
+</p>
+</div>
+
+```
+  {/* Quick scenarios */}
+  <div style={{ marginBottom:20 }}>
+    <div style={{ color:C.muted, fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:3, marginBottom:12 }}>QUICK SCENARIOS</div>
+    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+      {scenarios.map((s,i) => (
+        <button key={i} onClick={() => setPrompt(s)}
+          style={{
+            padding:"12px 16px", borderRadius:10, textAlign:"left",
+            background:C.card, border:`1px solid ${C.border}`,
+            color:C.mutedMid, fontFamily:FONT_BODY, fontSize:16,
+            cursor:"pointer", transition:"all 0.2s",
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor=C.goldDim; e.currentTarget.style.color=C.cream; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor=C.border; e.currentTarget.style.color=C.mutedMid; }}
+        >{s}</button>
+      ))}
+    </div>
+  </div>
+
+  <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
+    placeholder="Describe the scenario, paste the comment/DM, or type what you want your AI twin to respond to…"
+    rows={4}
+    style={{
+      width:"100%", padding:"18px 20px", marginBottom:16,
+      background:C.card, border:`1px solid ${C.border}`,
+      borderRadius:14, color:C.cream, fontFamily:FONT_BODY, fontSize:17,
+      lineHeight:1.7, resize:"vertical", outline:"none",
+    }}
+    onFocus={e => e.target.style.borderColor=C.goldDim}
+    onBlur={e => e.target.style.borderColor=C.border}
+  />
+
+  <button onClick={generate} disabled={loading || !prompt.trim()}
+    style={{
+      width:"100%", padding:"18px",
+      background:loading||!prompt.trim() ? C.card : `linear-gradient(135deg, ${C.goldDim}, ${C.gold})`,
+      border:`1px solid ${loading||!prompt.trim() ? C.border : "transparent"}`,
+      borderRadius:14, color:loading||!prompt.trim() ? C.muted : C.bg,
+      fontFamily:FONT_DISPLAY, fontSize:13, letterSpacing:3, fontWeight:700,
+      cursor:loading||!prompt.trim() ? "not-allowed" : "pointer", marginBottom:20,
+    }}>
+    {loading ? "CHANNELING YOUR VOICE…" : "◎ GENERATE TWIN RESPONSE"}
+  </button>
+
+  {output && (
+    <div style={{
+      background:C.card, border:`1px solid ${C.borderGold}`,
+      borderRadius:16, padding:"24px", animation:"fadeUp 0.4s ease forwards",
+    }}>
+      <div style={{ color:C.gold, fontFamily:FONT_DISPLAY, fontSize:9, letterSpacing:3, marginBottom:16 }}>
+        MAE / ZAYIAH · AI TWIN RESPONSE
+      </div>
+      <pre style={{ fontFamily:FONT_BODY, fontSize:17, color:C.cream, lineHeight:1.8, margin:"0 0 20px", whiteSpace:"pre-wrap" }}>
+        {output}
+      </pre>
+      <button onClick={() => { navigator.clipboard.writeText(output); }}
+        style={{ padding:"10px 20px", borderRadius:8, background:C.goldFaint,
+          border:`1px solid ${C.borderGold}`, color:C.gold,
+          fontFamily:FONT_DISPLAY, fontSize:10, letterSpacing:2, cursor:"pointer" }}>
+        COPY RESPONSE
+      </button>
+    </div>
+  )}
+  <style>{`@keyframes fadeUp { from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)} }`}</style>
+</div>
+```
+
+);
+}
+
+// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+export default function App() {
+const [tab, setTab]               = useState(“create”);
+const [savedDrafts, setSavedDrafts] = useState(loadSaved);
+
+return (
+<div style={{
+display:“flex”, height:“100vh”, overflow:“hidden”,
+background:C.bg, color:C.cream, position:“relative”,
+}}>
+<style>{`@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600&display=swap'); * { box-sizing:border-box; margin:0; padding:0; } ::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-track { background:${C.surface}; } ::-webkit-scrollbar-thumb { background:${C.goldDim}; border-radius:2px; } button { transition:filter 0.15s, transform 0.15s; } button:not(:disabled):hover { filter:brightness(1.1); } textarea { transition:border-color 0.2s; }`}</style>
+
+```
+  <Orbs/>
+  <Sidebar activeTab={tab} setActiveTab={setTab} savedCount={savedDrafts.length}/>
+
+  {/* Main content */}
+  <div style={{ flex:1, overflowY:"auto", position:"relative", zIndex:1 }}>
+    {tab==="create"   && <CreateTab savedDrafts={savedDrafts} setSavedDrafts={setSavedDrafts}/>}
+    {tab==="calendar" && <CalendarTab/>}
+    {tab==="saved"    && <SavedTab savedDrafts={savedDrafts} setSavedDrafts={setSavedDrafts}/>}
+    {tab==="trending" && <TrendingTab/>}
+    {tab==="twin"     && <TwinTab/>}
+  </div>
+</div>
+```
+
+);
+}
